@@ -146,7 +146,7 @@ void ServerBase::cleanupAfterLoop() {
 	// cleanup
 	log_dbg("thread %lu released allocations",(unsigned long)os_getthread().tid);
 
-	if (!g_pApp->m_const_params.mthread_server) {
+	if (!g_pApp->m_const_params.mthread) {
 		log_msg("%s() exit", __func__);
 	}
 }
@@ -489,7 +489,7 @@ void server_sig_handler(int signum) {
 	   (g_pApp->m_const_params.packetrate_stats_print_ratio < g_receiveCount))
 		printf("\n");
 
-	if (g_pApp->m_const_params.mthread_server) {
+	if (g_pApp->m_const_params.mthread) {
 		if (os_getthread().tid == thread_pid_array[0].tid) {  //main thread
 			if (g_debug_level >= LOG_LVL_DEBUG) {
 				log_dbg("Main thread %lu got signal %d - exiting",(unsigned long)os_getthread().tid,signum);

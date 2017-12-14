@@ -627,7 +627,7 @@ struct user_params_t {
 	unsigned int  burst_size;
 	bool packetrate_stats_print_details;
 //	bool stream_mode; - use b_stream instead
-	int mthread_server;
+	int mthread;
 	struct timeval* select_timeout;
 	int sock_buff_size;
 	int threads_num;
