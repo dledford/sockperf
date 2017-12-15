@@ -33,7 +33,9 @@
 #include "PacketTimes.h"
 #include "Switches.h"
 
-TicksTime s_startTime, s_endTime;
+extern CRITICAL_SECTION	thread_exit_lock;
+extern os_thread_t *thread_pid_array;
+TicksTime g_c_startTime, g_c_endTime;
 
 //==============================================================================
 //==============================================================================
@@ -119,7 +121,7 @@ void client_statistics(int serverNo, Message *pMsgRequest)
 
 	/* Print total statistic that is independent on server count */
 	if (SERVER_NO == 0) {
-		TicksDuration totalRunTime = s_endTime - s_startTime;
+		TicksDuration totalRunTime = g_c_endTime - g_c_startTime;
 		if (g_skipCount) {
 			log_msg_file2(f, "[Total Run] RunTime=%.3lf sec; Warm up time=%" PRIu32 " msec; SentMessages=%" PRIu64 "; ReceivedMessages=%" PRIu64 "; SkippedMessages=%" PRIu64 "",
 				totalRunTime.toDecimalUsec()/1000000, g_pApp->m_const_params.warmup_msec, sendCount, receiveCount, g_skipCount);
@@ -261,24 +263,34 @@ void client_statistics(int serverNo, Message *pMsgRequest)
 }
 
 //------------------------------------------------------------------------------
-void stream_statistics(Message *pMsgRequest)
+void stream_statistics(struct handler_info *p_info)
 {
-	TicksDuration totalRunTime = s_endTime - s_startTime;
+	TicksDuration totalRunTime = p_info->c_endTime - p_info->c_startTime;
+	uint64_t sendCount = p_info->sendCount;
+	char prefix[20];
+
+	if (g_pApp->m_const_params.mthread) {
+		if (p_info->id)
+			snprintf(prefix, sizeof prefix, "[TID: %d] ", p_info->id);
+		else
+			snprintf(prefix, sizeof prefix, "[TID: ALL] ");
+	}
+	else {
+		prefix[0] = '\0';
+	}
 
 	if (totalRunTime <= TicksDuration::TICKS0) return;
 	if (!g_pApp->m_const_params.b_stream) return;
 
-	const uint64_t sendCount = pMsgRequest->getSequenceCounter();
-
 	// Send only mode!
 	if (g_skipCount) {
-		log_msg("Total of %" PRIu64 " messages sent in %.3lf sec (%" PRIu64 " messages skipped)\n",
-				sendCount, totalRunTime.toDecimalUsec()/1000000, g_skipCount);
+		log_msg("%sTotal of %" PRIu64 " messages sent in %.3lf sec (%" PRIu64 " messages skipped)\n",
+				prefix, sendCount, totalRunTime.toDecimalUsec()/1000000, g_skipCount);
 	}
 	else 
 	{
-		log_msg("Total of %" PRIu64 " messages sent in %.3lf sec\n",
-				sendCount, totalRunTime.toDecimalUsec()/1000000);
+		log_msg("%sTotal of %" PRIu64 " messages sent in %.3lf sec\n",
+				prefix, sendCount, totalRunTime.toDecimalUsec()/1000000);
 	}
 	if (g_pApp->m_const_params.mps != MPS_MAX) {
 		if (g_pApp->m_const_params.msg_size_range)
@@ -308,17 +320,17 @@ void stream_statistics(Message *pMsgRequest)
 	int total_line_ip_data = g_pApp->m_const_params.msg_size;
 	double MBps = ((double)msgps * total_line_ip_data)/1024/1024; /* No including IP + UDP Headers per fragment */
 	if (ip_frags_per_msg == 1)
-		log_msg("Summary: Message Rate is %d [msg/sec]", msgps);
+		log_msg("%sSummary: Message Rate is %d [msg/sec]", prefix, msgps);
 	else
-		log_msg("Summary: Message Rate is %d [msg/sec], Packet Rate is about %d [pkt/sec] (%d ip frags / msg)", msgps, pktps, ip_frags_per_msg);
+		log_msg("%sSummary: Message Rate is %d [msg/sec], Packet Rate is about %d [pkt/sec] (%d ip frags / msg)", prefix, msgps, pktps, ip_frags_per_msg);
 	if (g_pApp->m_const_params.giga_size){
-		log_msg("Summary: BandWidth is %.3f GBps (%.3f Gbps)", MBps/1000, MBps*8/1000);
+		log_msg("%sSummary: BandWidth is %.3f GBps (%.3f Gbps)", prefix, MBps/1000, MBps*8/1000);
 	}
 	else if (g_pApp->m_const_params.increase_output_precision){
-			log_msg("Summary: BandWidth is %.9f GBps (%.9f Gbps)", MBps, MBps*8);
+			log_msg("%sSummary: BandWidth is %.9f GBps (%.9f Gbps)", prefix, MBps, MBps*8);
 	}
 	else{
-		log_msg("Summary: BandWidth is %.3f MBps (%.3f Mbps)", MBps, MBps*8);
+		log_msg("%sSummary: BandWidth is %.3f MBps (%.3f Mbps)", prefix, MBps, MBps*8);
 	}
 }
 
@@ -329,7 +341,7 @@ void client_sig_handler(int signum)
 		log_msg("Test end (interrupted by signal %d)", signum);
 		return;
 	}
-	s_endTime.setNowNonInline();
+	g_c_endTime.setNowNonInline();
 	g_b_exit = true;
 
 	// Just in case not Activity updates where logged add a '\n'
@@ -370,13 +382,15 @@ ClientBase::~ClientBase()
 	delete m_pMsgRequest;
 }
 
+
 //------------------------------------------------------------------------------
 template <class IoType, class SwitchDataIntegrity, class SwitchActivityInfo, class SwitchCycleDuration, class SwitchMsgSize , class PongModeCare >
-Client<IoType, SwitchDataIntegrity, SwitchActivityInfo, SwitchCycleDuration, SwitchMsgSize , PongModeCare>::Client(int _fd_min, int _fd_max, int _fd_num):
+Client<IoType, SwitchDataIntegrity, SwitchActivityInfo, SwitchCycleDuration, SwitchMsgSize , PongModeCare>::Client(struct handler_info *_p_info):
 	ClientBase(),
-	m_ioHandler(_fd_min, _fd_max, _fd_num),
+	m_ioHandler(_p_info->fd_min, _p_info->fd_max, _p_info->fd_num),
 	m_pongModeCare(m_pMsgRequest)
 {
+	p_info = _p_info;
 	os_thread_init (&m_receiverTid);
 }
 
@@ -408,6 +422,8 @@ template <class IoType, class SwitchDataIntegrity, class SwitchActivityInfo, cla
 void Client<IoType, SwitchDataIntegrity, SwitchActivityInfo, SwitchCycleDuration, SwitchMsgSize , PongModeCare>
 ::cleanupAfterLoop()
 {
+	p_info->c_endTime.setNowNonInline();
+
 	usleep(100*1000);//0.1 sec - wait for rx packets for last sends (in normal flow)
 	if (m_receiverTid.tid) {
 		os_thread_kill(&m_receiverTid);
@@ -426,7 +442,9 @@ void Client<IoType, SwitchDataIntegrity, SwitchActivityInfo, SwitchCycleDuration
 	}
 	else if (g_pApp->m_const_params.b_stream)
 	{
-		stream_statistics(m_pMsgRequest);
+		p_info->sendCount = m_pMsgRequest->getSequenceCounter();
+
+		stream_statistics(p_info);
 	}
 	else
 	{
@@ -627,9 +645,12 @@ int Client<IoType, SwitchDataIntegrity, SwitchActivityInfo, SwitchCycleDuration,
 					}
 
 					if (rc == SOCKPERF_ERR_NONE) {
-						s_startTime.setNowNonInline();
-						g_lastTicks = s_startTime;
-						g_cycleStartTime = s_startTime - g_pApp->m_const_params.cycleDuration;
+						p_info->c_startTime.setNowNonInline();
+						if (g_c_startTime == TicksTime::TICKS0) {
+							g_c_startTime = p_info->c_startTime;
+							g_lastTicks = p_info->c_startTime;
+							g_cycleStartTime = p_info->c_startTime - g_pApp->m_const_params.cycleDuration;
+						}
 					}
 				}
 			}
@@ -681,7 +702,7 @@ void Client<IoType, SwitchDataIntegrity, SwitchActivityInfo, SwitchCycleDuration
 ::doPlayback()
 {
 	usleep(100*1000);//wait for receiver thread to start (since we don't use warmup) //TODO: configure!
-	s_startTime.setNowNonInline();//reduce code size by calling non inline func from slow path
+	p_info->c_startTime.setNowNonInline();//reduce code size by calling non inline func from slow path
 	const PlaybackVector &pv = * g_pApp->m_const_params.pPlaybackVector;
 
 	size_t i = 0;
@@ -701,7 +722,7 @@ void Client<IoType, SwitchDataIntegrity, SwitchActivityInfo, SwitchCycleDuration
 		m_switchActivityInfo.execute(m_pMsgRequest->getSequenceCounter());
 	}
 	g_cycle_wait_loop_counter++; //for silenting waring at the end
-	s_endTime.setNowNonInline();//reduce code size by calling non inline func from slow path
+	p_info->c_endTime.setNowNonInline();//reduce code size by calling non inline func from slow path
 	usleep(20*1000);//wait for reply of last packet //TODO: configure!
 	g_b_exit = true;
 }
@@ -730,61 +751,61 @@ void Client<IoType, SwitchDataIntegrity, SwitchActivityInfo, SwitchCycleDuration
 
 //------------------------------------------------------------------------------
 template <class IoType, class SwitchDataIntegrity, class SwitchActivityInfo, class SwitchCycleDuration, class SwitchMsgSize, class PongModeCare>
-void client_handler(int _fd_min, int _fd_max, int _fd_num) {
-	Client<IoType, SwitchDataIntegrity, SwitchActivityInfo, SwitchCycleDuration, SwitchMsgSize, PongModeCare> c(_fd_min, _fd_max, _fd_num);
+void client_handler(struct handler_info *_p_info) {
+	Client<IoType, SwitchDataIntegrity, SwitchActivityInfo, SwitchCycleDuration, SwitchMsgSize, PongModeCare> c(_p_info);
 	c.doHandler();
 }
 
 //------------------------------------------------------------------------------
 template <class IoType, class SwitchDataIntegrity, class SwitchActivityInfo, class SwitchCycleDuration, class SwitchMsgSize>
-void client_handler(int _fd_min, int _fd_max, int _fd_num) {
+void client_handler(struct handler_info *_p_info) {
 	if (g_pApp->m_const_params.b_stream)
-		client_handler<IoType, SwitchDataIntegrity, SwitchActivityInfo, SwitchCycleDuration, SwitchMsgSize, PongModeNever> (_fd_min, _fd_max, _fd_num);
+		client_handler<IoType, SwitchDataIntegrity, SwitchActivityInfo, SwitchCycleDuration, SwitchMsgSize, PongModeNever> (_p_info);
 	else if (g_pApp->m_const_params.reply_every == 1)
-		client_handler<IoType, SwitchDataIntegrity, SwitchActivityInfo, SwitchCycleDuration, SwitchMsgSize, PongModeAlways> (_fd_min, _fd_max, _fd_num);
+		client_handler<IoType, SwitchDataIntegrity, SwitchActivityInfo, SwitchCycleDuration, SwitchMsgSize, PongModeAlways> (_p_info);
 	else
-		client_handler<IoType, SwitchDataIntegrity, SwitchActivityInfo, SwitchCycleDuration, SwitchMsgSize, PongModeNormal> (_fd_min, _fd_max, _fd_num);
+		client_handler<IoType, SwitchDataIntegrity, SwitchActivityInfo, SwitchCycleDuration, SwitchMsgSize, PongModeNormal> (_p_info);
 }
 
 //------------------------------------------------------------------------------
 template <class IoType, class SwitchDataIntegrity, class SwitchActivityInfo, class SwitchCycleDuration>
-void client_handler(int _fd_min, int _fd_max, int _fd_num) {
+void client_handler(struct handler_info *_p_info) {
 	if (g_pApp->m_const_params.msg_size_range > 0)
-		client_handler<IoType, SwitchDataIntegrity, SwitchActivityInfo, SwitchCycleDuration, SwitchOnMsgSize> (_fd_min, _fd_max, _fd_num);
+		client_handler<IoType, SwitchDataIntegrity, SwitchActivityInfo, SwitchCycleDuration, SwitchOnMsgSize> (_p_info);
 	else
-		client_handler<IoType, SwitchDataIntegrity, SwitchActivityInfo, SwitchCycleDuration, SwitchOff> (_fd_min, _fd_max, _fd_num);
+		client_handler<IoType, SwitchDataIntegrity, SwitchActivityInfo, SwitchCycleDuration, SwitchOff> (_p_info);
 }
 
 //------------------------------------------------------------------------------
 template <class IoType, class SwitchDataIntegrity, class SwitchActivityInfo>
-void client_handler(int _fd_min, int _fd_max, int _fd_num) {
+void client_handler(struct handler_info *_p_info) {
 	if (g_pApp->m_const_params.cycleDuration > TicksDuration::TICKS0) {
 		if (g_pApp->m_const_params.dummy_mps) {
-			client_handler<IoType, SwitchDataIntegrity, SwitchActivityInfo, SwitchOnDummySend> (_fd_min, _fd_max, _fd_num);
+			client_handler<IoType, SwitchDataIntegrity, SwitchActivityInfo, SwitchOnDummySend> (_p_info);
 		} else {
-			client_handler<IoType, SwitchDataIntegrity, SwitchActivityInfo, SwitchOnCycleDuration> (_fd_min, _fd_max, _fd_num);
+			client_handler<IoType, SwitchDataIntegrity, SwitchActivityInfo, SwitchOnCycleDuration> (_p_info);
 		}
 	}
 	else
-		client_handler<IoType, SwitchDataIntegrity, SwitchActivityInfo, SwitchOff> (_fd_min, _fd_max, _fd_num);
+		client_handler<IoType, SwitchDataIntegrity, SwitchActivityInfo, SwitchOff> (_p_info);
 }
 
 //------------------------------------------------------------------------------
 template <class IoType, class SwitchDataIntegrity>
-void client_handler(int _fd_min, int _fd_max, int _fd_num) {
+void client_handler(struct handler_info *_p_info) {
 	if (g_pApp->m_const_params.packetrate_stats_print_ratio > 0)
-		client_handler<IoType, SwitchDataIntegrity, SwitchOnActivityInfo> (_fd_min, _fd_max, _fd_num);
+		client_handler<IoType, SwitchDataIntegrity, SwitchOnActivityInfo> (_p_info);
 	else
-		client_handler<IoType, SwitchDataIntegrity, SwitchOff> (_fd_min, _fd_max, _fd_num);
+		client_handler<IoType, SwitchDataIntegrity, SwitchOff> (_p_info);
 }
 
 //------------------------------------------------------------------------------
 template <class IoType>
-void client_handler(int _fd_min, int _fd_max, int _fd_num) {
+void client_handler(struct handler_info *_p_info) {
 	if (g_pApp->m_const_params.data_integrity)
-		client_handler<IoType, SwitchOnDataIntegrity> (_fd_min, _fd_max, _fd_num);
+		client_handler<IoType, SwitchOnDataIntegrity> (_p_info);
 	else
-		client_handler<IoType, SwitchOff> (_fd_min, _fd_max, _fd_num);
+		client_handler<IoType, SwitchOff> (_p_info);
 }
 
 //------------------------------------------------------------------------------
@@ -794,29 +815,29 @@ void client_handler(handler_info *p_info)
 		switch (g_pApp->m_const_params.fd_handler_type) {
 			case SELECT:
 			{
-				client_handler<IoSelect> (p_info->fd_min, p_info->fd_max, p_info->fd_num);
+				client_handler<IoSelect> (p_info);
 				break;
 			}
 			case RECVFROM:
 			{
-				client_handler<IoRecvfrom> (p_info->fd_min, p_info->fd_max, p_info->fd_num);
+				client_handler<IoRecvfrom> (p_info);
 				break;
 			}
 			case RECVFROMMUX:
 			{
-				client_handler<IoRecvfromMUX> (p_info->fd_min, p_info->fd_max, p_info->fd_num);
+				client_handler<IoRecvfromMUX> (p_info);
 				break;
 			}
 #ifndef WIN32
 			case POLL:
 			{
-				client_handler<IoPoll> (p_info->fd_min, p_info->fd_max, p_info->fd_num);
+				client_handler<IoPoll> (p_info);
 				break;
 			}
 #ifndef __FreeBSD__
 			case EPOLL:
 			{
-				client_handler<IoEpoll> (p_info->fd_min, p_info->fd_max, p_info->fd_num);
+				client_handler<IoEpoll> (p_info);
 				break;
 			}
 #endif
@@ -835,4 +856,27 @@ void client_handler(handler_info *p_info)
 			}
 		}
 	}
+}
+
+void *client_handler_multi_thread(void *arg)
+{
+	struct handler_info *p_info = (handler_info *)arg;
+
+	if (p_info) {
+		client_handler(p_info);
+
+		/* Mark this thread as complete (the first index is reserved for main thread) */
+		{
+			int i = p_info->id + 1;
+			if (p_info->id < g_pApp->m_const_params.threads_num) {
+				if (thread_pid_array && thread_pid_array[i].tid && (thread_pid_array[i].tid == os_getthread().tid)) {
+					ENTER_CRITICAL(&thread_exit_lock);
+					thread_pid_array[i].tid = 0;
+					LEAVE_CRITICAL(&thread_exit_lock);
+				}
+			}
+		}
+	}
+
+	return 0;
 }

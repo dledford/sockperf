@@ -91,8 +91,10 @@ CRITICAL_SECTION	thread_exit_lock;
 os_thread_t *thread_pid_array = NULL;
 
 // forward declarations from Client.cpp & Server.cpp
+extern void stream_statistics(struct handler_info *p_info);
 extern void client_sig_handler(int signum);
 extern void client_handler(handler_info *);
+extern void *client_handler_multi_thread(void *);
 extern void server_sig_handler(int signum);
 extern void server_handler(handler_info *);
 extern void *server_handler_multi_thread(void *);
@@ -366,8 +368,8 @@ void select_per_thread(void *(handler)(void *), int _fd_num) {
 	int last_fds = 0;
 	handler_info *handler_info_array = NULL;
 
-	handler_info_array = (handler_info*)MALLOC(sizeof(handler_info) * g_pApp->m_const_params.threads_num);
-	memset(handler_info_array, 0, sizeof(handler_info) * g_pApp->m_const_params.threads_num);
+	handler_info_array = (handler_info*)MALLOC(sizeof(handler_info) * (g_pApp->m_const_params.threads_num + 1));
+	memset(handler_info_array, 0, sizeof(handler_info) * (g_pApp->m_const_params.threads_num + 1));
 	if (!handler_info_array) {
 		log_err("Failed to allocate memory for handler_info_arr");
 		rc = SOCKPERF_ERR_NO_MEMORY;
@@ -394,7 +396,7 @@ void select_per_thread(void *(handler)(void *), int _fd_num) {
 		num_of_remainded_fds = _fd_num % g_pApp->m_const_params.threads_num;
 		fd_num = _fd_num / g_pApp->m_const_params.threads_num;
 
-		for (i = 0; i < g_pApp->m_const_params.threads_num; i++) {
+		for (i = 1; i <= g_pApp->m_const_params.threads_num; i++) {
 			handler_info *cur_handler_info = (handler_info_array + i);
 
 			/* Set ID of handler (thread) */
@@ -424,12 +426,23 @@ void select_per_thread(void *(handler)(void *), int _fd_num) {
 				rc = SOCKPERF_ERR_FATAL;
 				break;
 			}
-			thread_pid_array[i + 1].tid = thread.tid;
+			thread_pid_array[i].tid = thread.tid;
 			last_fds = cur_handler_info->fd_max + 1;
 		}
 
 		/* Wait for ^C */
 		while ((rc == SOCKPERF_ERR_NONE) && !g_b_exit) {
+			sleep(1);
+		}
+
+		/* If we are stopped by a timer, we need to wait for the
+		 * sending threads to complete and fill out their p_info
+		 * structs or our totals are off.  We might have been the
+		 * thread that took the timer interrupt, and os_thread_join
+		 * below isn't waiting for us to get results, so just sleep
+		 * for a little extra time
+		 */
+		if (g_pApp->m_const_params.b_stream) {
 			sleep(1);
 		}
 
@@ -450,6 +463,31 @@ void select_per_thread(void *(handler)(void *), int _fd_num) {
 		}
 
 		DELETE_CRITICAL(&thread_exit_lock);
+	}
+
+	/* Print out stream stats for all threads combined */
+	if (g_pApp->m_const_params.b_stream && g_pApp->m_const_params.mthread &&
+	    g_pApp->m_const_params.threads_num > 1) {
+		struct handler_info *p0 = handler_info_array;
+		struct handler_info *t;
+		int threads = g_pApp->m_const_params.threads_num;
+		TicksDuration threadRunTime, totalRunTime;
+
+		totalRunTime = TicksDuration::TICKS0;
+		/* Sum up the totals fields */
+		for (i = 1; i <= threads; i++) {
+			t = handler_info_array + i;
+			p0->sendCount += t->sendCount;
+			threadRunTime = t->c_endTime - t->c_startTime;
+			totalRunTime += threadRunTime;
+		}
+		/* average out the runtimes across the threads */
+		totalRunTime /= threads;
+		p0->c_startTime = t->c_startTime;
+		p0->c_endTime = t->c_startTime + totalRunTime;
+
+		/* print it out */
+		stream_statistics(p0);
 	}
 
 	/* Free thread info allocated data */
@@ -3495,7 +3533,12 @@ void do_test()
 #endif
 	switch (s_user_params.mode) {
 	case MODE_CLIENT:
-		client_handler(&info);
+		if (s_user_params.b_stream && s_user_params.mthread) {
+			select_per_thread(client_handler_multi_thread, fd_num);
+		}
+		else {
+			client_handler(&info);
+		}
 		break;
 	case MODE_SERVER:
 		if (s_user_params.mthread) {

@@ -53,6 +53,7 @@ private:
 	os_thread_t m_receiverTid;
 	IoType m_ioHandler;
 	addr_to_id   m_ServerList;
+	struct handler_info *p_info;
 
 	SwitchDataIntegrity m_switchDataIntegrity;
 	SwitchActivityInfo  m_switchActivityInfo;
@@ -61,7 +62,7 @@ private:
 	PongModeCare        m_pongModeCare; // has msg_sendto() method and can be one of: PongModeNormal, PongModeAlways, PongModeNever
 
 public:
-	Client(int _fd_min, int _fd_max, int _fd_num);
+	Client(struct handler_info *_p_info);
 	virtual ~Client();
 	void doHandler();
 	void client_receiver_thread();

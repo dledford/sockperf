@@ -484,6 +484,14 @@ typedef struct handler_info {
 	int fd_min;					/**< minimum descriptor (fd) */
 	int fd_max;					/**< maximum socket descriptor (fd) */
 	int fd_num;					/**< number of socket descriptors */
+	/* These are all of the stats relevant to a single thread's streaming
+	 * I/O performance.  When running a throughput test as client and
+	 * running in multiple threads, we sum these up to across the
+	 * threads to get a total
+	 */
+	uint64_t sendCount;
+	TicksTime c_startTime;
+	TicksTime c_endTime;
 }handler_info;
 
 typedef struct clt_session_info {
